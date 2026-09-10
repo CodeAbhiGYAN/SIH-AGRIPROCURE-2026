@@ -96,7 +96,7 @@ The Farmer App allows farmers to:
 - Interact with the in-app assistant
 - Manage language and profile settings
 
-2. Procurement Center App
+2. Procurement Center App (Procurement Center Password: procure123)
 
 The Procurement Center App allows authorized personnel to:
 
