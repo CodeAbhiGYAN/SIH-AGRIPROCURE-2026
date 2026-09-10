@@ -21,6 +21,8 @@ The Procurement Center App provides authorized personnel with tools to
 review farmer information, manage the procurement workflow, update
 application status, and coordinate the processing of farmer requests.
 
+Procurement Center Password: procure123
+
 ## Project Information
 1. Project Title: AGRIPROCURE
 
