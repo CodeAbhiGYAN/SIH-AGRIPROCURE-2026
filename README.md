@@ -59,6 +59,8 @@ to be reflected at the procurement center. This provides a consistent
 view of the procurement process and reduces dependence on manual
 communication and paperwork.
 
+Procurement Center Password: procure123
+
 ## Objectives
 
 - Simplify access to procurement-related services
