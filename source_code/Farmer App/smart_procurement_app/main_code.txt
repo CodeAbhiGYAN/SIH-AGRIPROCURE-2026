@@ -1,0 +1,415 @@
+import 'dart:async';
+import 'package:flutter/material.dart';
+import 'models/models.dart';
+import 'services/ai_service.dart';
+import 'services/data_service.dart';
+import 'services/maps_service.dart';
+import 'services/notification_service.dart';
+import 'services/queue_service.dart';
+import 'services/localization_service.dart';
+import 'scheduling/rescheduling.dart';
+import 'screens/assistant_screen.dart';
+import 'screens/auth_screen.dart';
+import 'screens/home_screen.dart';
+import 'screens/profile_screen.dart';
+import 'screens/queue_screen.dart';
+import 'screens/status_screen.dart';
+import 'screens/travel_screen.dart';
+import 'screens/verification_screen.dart';
+import 'screens/msp_screen.dart';
+import 'theme/app_theme.dart';
+import 'widgets/common.dart';
+
+void main() => runApp(const SmartProcurementApp());
+
+class AppState extends ChangeNotifier {
+  final DataService data = DataService();
+  final NotificationService notifications = NotificationService();
+  final QueueService queue = QueueService();
+  final MapsService maps = MapsService();
+  final AiService ai = AiService();
+
+  int tab = 0;
+  bool farmerMode = true;
+  bool authenticated = false;
+  bool verified = false;
+  String language = 'English';
+
+  String t(String key) => FarmerLocalizer.text(language, key);
+  bool appointmentAssigned = false;
+  bool appointmentNotificationVisible = false;
+
+  int procurementStage = 1;
+  String farmerId = 'F001';
+  String farmerName = '';
+  String farmerMobile = '';
+  Timer? appointmentTimer;
+  Timer? notificationTimer;
+  AppNotification? activeNotification;
+  final Map<String, Set<String>> procurementDone = {};
+  final Map<String, DateTime> attendanceAt = {};
+
+  Map<String, String> get assistantContext {
+    final f = farmer;
+    final c = assignedCentre;
+    final done = procurementDone[farmerId] ?? <String>{};
+    final verificationText = verificationCompleted.length == 5 ? 'Complete' : '${verificationCompleted.length}/5 completed';
+    final statusText = done.isEmpty ? 'Verification complete; centre processing has not started yet' : done.join(', ');
+    return {
+      'leave': '10:40 AM',
+      'centre': c.name,
+      'date': f.procurementDay,
+      'slot': f.window,
+      'queue': '${queue.ahead(c)}',
+      'verification': verificationText,
+      'payment': done.contains('Payment') ? 'Completed' : 'Pending',
+      'attendance': done.contains('Attendance') ? 'marked' : 'pending',
+      'status': statusText,
+      'language': language,
+    };
+  }
+
+  int reassignmentCount = 0;
+
+  final Set<String> verificationCompleted = <String>{};
+  String bankName = '';
+  String bankAccount = '';
+  String bankConfirmAccount = '';
+  String bankIfsc = '';
+  String selectedCrop = '';
+  String cropQuantity = '';
+  String cropSeason = '';
+
+  Farmer get farmer => data.farmers.firstWhere((f) => f.id == farmerId);
+  Centre get assignedCentre => data.centres.firstWhere((c) => c.id == farmer.centreId);
+
+  void login({required String farmerId, required String name, required String mobile}) {
+    authenticated = true;
+    farmerMode = true;
+    this.farmerId = farmerId;
+    farmerName = name;
+    farmerMobile = mobile;
+    tab = 0;
+    notifyListeners();
+  }
+
+  void logout() {
+    appointmentTimer?.cancel();
+    notificationTimer?.cancel();
+    authenticated = false;
+    farmerMode = true;
+    tab = 0;
+    verified = false;
+    language = 'English';
+    appointmentAssigned = false;
+    appointmentNotificationVisible = false;
+    procurementStage = 1;
+    verificationCompleted.clear();
+    bankName = '';
+    bankAccount = '';
+    bankConfirmAccount = '';
+    bankIfsc = '';
+    selectedCrop = '';
+    cropQuantity = '';
+    cropSeason = '';
+    activeNotification = null;
+    procurementDone.clear();
+    attendanceAt.clear();
+    reassignmentCount = 0;
+    notifyListeners();
+  }
+
+  void setLanguage(String value) {
+    if (value != 'English' && value != 'Hindi') return;
+    language = value;
+    notifyListeners();
+  }
+
+  void setTab(int index) {
+    tab = index;
+    notifyListeners();
+  }
+
+  void markVerificationComplete(String stage) {
+    verificationCompleted.add(stage);
+    notifyListeners();
+  }
+
+  void saveBankDetails(String bank, String account, String confirmAccount, String ifsc) {
+    bankName = bank;
+    bankAccount = account;
+    bankConfirmAccount = confirmAccount;
+    bankIfsc = ifsc;
+    notifyListeners();
+  }
+
+  void saveCropDetails(String crop, String quantity, String season) {
+    selectedCrop = crop;
+    cropQuantity = quantity;
+    cropSeason = season;
+    notifyListeners();
+  }
+
+  void completeVerification() {
+    if (verificationCompleted.length < 5) return;
+    verified = true;
+    data.setVerified();
+    appointmentAssigned = false;
+    appointmentNotificationVisible = false;
+    notifyListeners();
+
+    appointmentTimer?.cancel();
+    appointmentTimer = Timer(const Duration(seconds: 22), () {
+      appointmentAssigned = true;
+      appointmentNotificationVisible = true;
+      final note = AppNotification(
+        'Appointment confirmed',
+        '${assignedCentre.name} • ${farmer.procurementDay} • ${farmer.window}',
+        DateTime.now(),
+        details:
+            'Your procurement appointment is confirmed.\n\nCentre: ${assignedCentre.name}\nAddress: ${assignedCentre.address}\nDate: ${farmer.procurementDay}\nSlot: ${farmer.window}\n\nYour queue and travel plan are now available in the app.',
+        kind: NotificationKind.appointment,
+      );
+      _showNotification(note);
+    });
+  }
+
+  void _showNotification(AppNotification note) {
+    notificationTimer?.cancel();
+    activeNotification = note;
+    notifications.add(
+      note.title,
+      note.message,
+      details: note.details,
+      critical: note.critical,
+      kind: note.kind,
+    );
+    notifications.showSystemNotification(
+      title: 'Messages',
+      message: '${note.title}: ${note.message}',
+      details: note.details,
+      id: DateTime.now().millisecondsSinceEpoch.remainder(1000000000),
+    );
+    notifyListeners();
+    notificationTimer = Timer(const Duration(seconds: 5), () {
+      activeNotification = null;
+      appointmentNotificationVisible = false;
+      notifyListeners();
+    });
+  }
+
+  void dismissNotification() {
+    notificationTimer?.cancel();
+    activeNotification = null;
+    appointmentNotificationVisible = false;
+    notifyListeners();
+  }
+
+  void showNotificationDetails(BuildContext context) {
+    final note = activeNotification;
+    if (note == null) return;
+    notificationTimer?.cancel();
+    activeNotification = null;
+    appointmentNotificationVisible = false;
+    notifyListeners();
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Row(
+          children: [
+            const Icon(Icons.notifications_active),
+            const SizedBox(width: 8),
+            Expanded(child: Text(note.title)),
+          ],
+        ),
+        content: SingleChildScrollView(child: Text(note.details.isEmpty ? note.message : note.details)),
+        actions: [
+          if (note.kind == NotificationKind.appointment || note.kind == NotificationKind.reschedule)
+            FilledButton(
+              onPressed: () {
+                Navigator.pop(dialogContext);
+                setTab(note.kind == NotificationKind.reschedule ? 0 : 0);
+              },
+              child: const Text('Open Appointment'),
+            )
+          else
+            FilledButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Close')),
+        ],
+      ),
+    );
+  }
+
+  void simulateFailure() {
+    final index = data.centres.indexWhere((c) => c.id == 'A');
+    if (index < 0) return;
+
+    data.centres[index] = data.centres[index].copyWith(
+      currentLoad: 98,
+      queue: 86,
+      processingRate: 4,
+      weighbridgesWorking: 1,
+      status: CentreStatus.degraded,
+    );
+
+    final oldCentreId = farmer.centreId;
+    final affected = ReschedulingEngine().redistribute(
+      farmers: data.farmers,
+      centres: data.centres,
+    );
+    for (var i = 0; i < data.farmers.length; i++) {
+      data.farmers[i] = affected[i];
+    }
+
+    if (farmer.centreId != oldCentreId) {
+      reassignmentCount += 1;
+      final note = AppNotification(
+        'Procurement centre updated',
+        'Centre changed to ${assignedCentre.name} • ${farmer.procurementDay} • ${farmer.window}',
+        DateTime.now(),
+        details:
+            'Your procurement centre has been rescheduled because Centre A is experiencing a capacity/equipment delay.\n\nPrevious centre: ${data.centres.firstWhere((c) => c.id == oldCentreId).name}\nNew centre: ${assignedCentre.name}\nDate: ${farmer.procurementDay}\nSlot: ${farmer.window}\n\nYour travel and queue information has been updated.',
+        critical: true,
+        kind: NotificationKind.reschedule,
+      );
+      _showNotification(note);
+    }
+    notifyListeners();
+  }
+
+  void markAttendance() {
+    procurementDone.putIfAbsent(farmerId, () => <String>{}).add('Attendance');
+    attendanceAt[farmerId] = DateTime.now();
+    notifyListeners();
+  }
+
+  void setProcurementStages(String farmerId, Set<String> stages) {
+    procurementDone[farmerId] = {...stages};
+    notifyListeners();
+  }
+
+  void resetDemo() {
+    final fresh = DataService();
+    data.centres
+      ..clear()
+      ..addAll(fresh.centres);
+    data.farmers
+      ..clear()
+      ..addAll(fresh.farmers);
+    data.verification = fresh.verification;
+    verificationCompleted.clear();
+    bankName = '';
+    bankAccount = '';
+    bankConfirmAccount = '';
+    bankIfsc = '';
+    selectedCrop = '';
+    cropQuantity = '';
+    cropSeason = '';
+    verified = false;
+    language = 'English';
+    appointmentAssigned = false;
+    appointmentNotificationVisible = false;
+    procurementStage = 1;
+    notifications.items.clear();
+    notificationTimer?.cancel();
+    activeNotification = null;
+    procurementDone.clear();
+    attendanceAt.clear();
+    reassignmentCount = 0;
+    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    appointmentTimer?.cancel();
+    notificationTimer?.cancel();
+    super.dispose();
+  }
+}
+
+class SmartProcurementApp extends StatefulWidget {
+  const SmartProcurementApp({super.key});
+
+  @override
+  State<SmartProcurementApp> createState() => _SmartProcurementAppState();
+}
+
+class _SmartProcurementAppState extends State<SmartProcurementApp> {
+  final AppState state = AppState();
+
+  @override
+  void initState() {
+    super.initState();
+    state.notifications.initialize();
+  }
+
+  @override
+  void dispose() {
+    state.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: state,
+      builder: (context, _) {
+        return MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: AppTheme.light,
+          home: !state.authenticated ? AuthScreen(state: state) : FarmerShell(state: state),
+        );
+      },
+    );
+  }
+}
+
+class FarmerShell extends StatelessWidget {
+  final AppState state;
+  const FarmerShell({super.key, required this.state});
+
+  @override
+  Widget build(BuildContext context) {
+    final pages = [
+      HomeScreen(state: state),
+      QueueScreen(state: state),
+      TravelScreen(state: state),
+      VerificationScreen(state: state),
+      MspScreen(state: state),
+      AssistantScreen(state: state),
+    ];
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Smart Procurement', style: TextStyle(fontWeight: FontWeight.w800)),
+        actions: [
+          PopupMenuButton<String>(
+            onSelected: (value) {
+              if (value == 'profile') {
+                Navigator.push(context, MaterialPageRoute(builder: (_) => ProfileScreen(state: state)));
+              } else if (value == 'status') {
+                Navigator.push(context, MaterialPageRoute(builder: (_) => StatusScreen(state: state)));
+              }
+            },
+            itemBuilder: (_) => [
+              PopupMenuItem(value: 'status', child: Text(state.t('procurement_status'))),
+              PopupMenuItem(value: 'profile', child: Text(state.t('profile_settings'))),
+            ],
+          ),
+        ],
+      ),
+      body: pages[state.tab],
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: state.tab,
+        onDestinationSelected: state.setTab,
+        destinations: [
+          NavigationDestination(icon: const Icon(Icons.home_outlined), selectedIcon: const Icon(Icons.home), label: state.t('home')),
+          NavigationDestination(icon: const Icon(Icons.groups_outlined), selectedIcon: const Icon(Icons.groups), label: state.t('queue_tab')),
+          NavigationDestination(icon: const Icon(Icons.route_outlined), selectedIcon: const Icon(Icons.route), label: state.t('travel_tab')),
+          NavigationDestination(icon: const Icon(Icons.verified_user_outlined), selectedIcon: const Icon(Icons.verified_user), label: state.t('verify_tab')),
+          NavigationDestination(icon: const Icon(Icons.currency_rupee), selectedIcon: const Icon(Icons.currency_rupee), label: state.t('msp')),
+          NavigationDestination(icon: const Icon(Icons.support_agent_outlined), selectedIcon: const Icon(Icons.support_agent), label: state.t('assistant')),
+        ],
+      ),
+    );
+  }
+}
