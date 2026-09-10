@@ -4,6 +4,9 @@ A Flutter-based application designed for procurement-center personnel
 to manage farmer applications and
 process procurement-related activities efficiently.
 
+## Procurement Center Password
+Password: procure123
+
 ## Overview
 
 The Procurement Center App provides authorized personnel with a
